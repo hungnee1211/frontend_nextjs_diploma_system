@@ -208,24 +208,30 @@ export default function IssuerPage() {
   };
 
   // CẤP BẰNG
+  // CẤP BẰNG - ĐÃ FIX LỖI TREO KHI ĐÚC ON-CHAIN
   const handleIssueDiploma = async (e: React.FormEvent) => {
     e.preventDefault();
 
     if (!contract || !account) return toast.error('Vui lòng kết nối ví!');
-    if (!receiverWallet) return toast.error('Vui lòng nhập địa chỉ ví nhận!');
+    if (!receiverWallet.trim()) return toast.error('Vui lòng nhập địa chỉ ví nhận!');
+    if (!diplomaInfo.fullName.trim() || !diplomaInfo.studentId.trim()) {
+      return toast.error('Vui lòng điền các thông tin bắt buộc của bằng cấp (Họ tên, Mã SV)!');
+    }
 
     setLoading(true);
 
     try {
       const diplomaHash = currentDiplomaHash;
-      const studentOnChain = await contract.students(receiverWallet);
-
+      
+      // 1. Kiểm tra xem sinh viên đã được ghi danh chưa
+      const studentOnChain = await contract.students(receiverWallet.trim());
       if (!studentOnChain || !studentOnChain.exists) {
         toast.error('Sinh viên chưa được ghi danh trên hệ thống!');
         setLoading(false);
         return;
       }
 
+      // 2. Kiểm tra xem mã hash bằng này đã tồn tại trên mạng chưa
       if (typeof contract.diplomas === 'function') {
         const diplomaOnChain = await contract.diplomas(diplomaHash);
         if (diplomaOnChain && diplomaOnChain.isIssued) {
@@ -234,13 +240,52 @@ export default function IssuerPage() {
         }
       }
 
-      const tx = await contract.issueDiploma(diplomaHash, receiverWallet);
+      // 3. Thực thi giao dịch
+      const tx = await contract.issueDiploma(diplomaHash, receiverWallet.trim());
+      
+      // Chờ block xác nhận giao dịch thành công
       const receipt = await tx.wait();
 
-      const event = receipt.events?.find((e: any) => e.event === 'DiplomaIssued');
-      const finalHash = event ? event.args.diplomaHash : diplomaHash;
+      // 💡 FIX ETHERS V6: Tìm kiếm sự kiện 'DiplomaIssued' trong mảng receipt.logs thay vì receipt.events
+      let finalHash = diplomaHash;
+      if (receipt && receipt.logs) {
+        for (const log of receipt.logs) {
+          try {
+            // Giải mã log dựa trên Interface của Contract để tìm đúng tên Event
+            const parsedLog = contract.interface.parseLog({
+              topics: log.topics as string[],
+              data: log.data
+            });
+            
+            if (parsedLog && parsedLog.name === 'DiplomaIssued') {
+              // Ethers v6 trích xuất tham số sự kiện qua .args
+              finalHash = parsedLog.args.diplomaHash || diplomaHash;
+              break;
+            }
+          } catch (logError) {
+            // Bỏ qua các log không thuộc về sự kiện này
+            continue;
+          }
+        }
+      }
 
+      // 4. Cập nhật giao diện và xóa dữ liệu form cũ
       addActivity(`Cấp bằng cho: ${diplomaInfo.fullName}`, finalHash);
+      
+      // Reset form cấp bằng về trạng thái trống rộng
+      setReceiverWallet('');
+      setDiplomaInfo({
+        fullName: '',
+        dateOfBirth: '',
+        gender: 'Nam',
+        studentId: '',
+        course: '',
+        major: '',
+        ranking: 'Khá',
+        issueDate: new Date().toISOString().split('T')[0],
+      });
+
+      await fetchOnChainData();
 
       toast.success(`Cấp bằng thành công! Mã tra cứu: ${finalHash.slice(0, 10)}...`, {
         action: {
@@ -252,9 +297,11 @@ export default function IssuerPage() {
         }
       });
     } catch (error: any) {
+      console.error("Lỗi đúc bằng:", error);
       const contractReason = parseContractError(error);
       toast.error(`Thất bại: ${contractReason}`);
     } finally {
+      // Luôn luôn giải phóng trạng thái loading cho dù giao dịch thành công hay thất bại
       setLoading(false);
     }
   };
