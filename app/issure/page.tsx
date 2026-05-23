@@ -214,7 +214,7 @@ export default function IssuerPage() {
 
     if (!contract || !account) return toast.error('Vui lòng kết nối ví!');
     if (!receiverWallet.trim()) return toast.error('Vui lòng nhập địa chỉ ví nhận!');
-    if (!diplomaInfo.fullName.trim() || !diplomaInfo.studentId.trim()) {
+    if (!diplomaInfo.fullName.trim()) {
       return toast.error('Vui lòng điền các thông tin bắt buộc của bằng cấp (Họ tên, Mã SV)!');
     }
 
