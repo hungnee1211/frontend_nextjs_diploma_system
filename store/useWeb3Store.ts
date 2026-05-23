@@ -26,6 +26,21 @@ interface Web3State {
 
 let listenersAdded = false;
 
+// 🛠️ Hàm bổ trợ: Trích xuất nhà cung cấp ví sạch, chống xung đột extension
+const getSafeEthereumProvider = () => {
+  if (typeof window === "undefined" || !window.ethereum) return null;
+
+  // Nếu trình duyệt cài nhiều ví cùng lúc, window.ethereum.providers sẽ tồn tại
+  if (window.ethereum.providers && Array.isArray(window.ethereum.providers)) {
+    // Tìm ví nào định danh là MetaMask chuẩn
+    const metaMaskProvider = window.ethereum.providers.find((p: any) => p.isMetaMask);
+    if (metaMaskProvider) return metaMaskProvider;
+  }
+
+  // Trường hợp thông thường hoặc chỉ có 1 ví duy nhất ghi đè
+  return window.ethereum;
+};
+
 export const useWeb3Store = create<Web3State>((set, get) => ({
   account: null,
   provider: null,
@@ -35,21 +50,22 @@ export const useWeb3Store = create<Web3State>((set, get) => ({
   isLoading: false,
   chainId: null,
 
-
-  
-
   connectWallet: async () => {
     try {
-      if (!window.ethereum) {
-        alert("Cài MetaMask");
+      const activeProvider = getSafeEthereumProvider();
+      
+      if (!activeProvider) {
+        alert("Không tìm thấy ví MetaMask! Vui lòng cài đặt tiện ích mở rộng này.");
         return;
       }
 
       set({ isLoading: true });
 
-      const provider = new ethers.BrowserProvider(window.ethereum);
+      // Khởi tạo BrowserProvider dựa trên lớp ví an toàn đã lọc
+      const provider = new ethers.BrowserProvider(activeProvider);
 
-      await provider.send("eth_requestAccounts", []);
+      // Gọi trực tiếp yêu cầu từ provider đã bóc tách để né file chen ngang evmAsk.js
+      await activeProvider.request({ method: "eth_requestAccounts" });
 
       const signer = await provider.getSigner();
       const account = await signer.getAddress();
@@ -74,13 +90,16 @@ export const useWeb3Store = create<Web3State>((set, get) => ({
       localStorage.setItem("wallet_connected", "true");
 
     } catch (error) {
-      console.log(error);
+      console.error("Lỗi chi tiết khi kết nối ví:", error);
       set({ isLoading: false });
+      throw error; // Đẩy lỗi ra ngoài để UI Toast nhận được dữ liệu và hiển thị công khai
     }
   },
 
   logout: () => {
-    localStorage.removeItem("wallet_connected");
+    if (typeof window !== "undefined") {
+      localStorage.removeItem("wallet_connected");
+    }
 
     set({
       account: null,
@@ -93,17 +112,18 @@ export const useWeb3Store = create<Web3State>((set, get) => ({
   },
 
   initWallet: async () => {
-    if (!window.ethereum) return;
+    const activeProvider = getSafeEthereumProvider();
+    if (!activeProvider) return;
 
     try {
-      const provider = new ethers.BrowserProvider(window.ethereum);
+      const provider = new ethers.BrowserProvider(activeProvider);
+      
+      // Kiểm tra xem ví đã cấp quyền từ trước chưa (Tránh tự động bật popup phiền hà khi reload)
+      const accounts = await activeProvider.request({ method: "eth_accounts" });
+      const saved = typeof window !== "undefined" ? localStorage.getItem("wallet_connected") : null;
 
-      const accounts = await provider.send("eth_accounts", []);
-
-      const saved = localStorage.getItem("wallet_connected");
-
-      // giữ kết nối sau reload
-      if (saved === "true" && accounts.length > 0) {
+      // Giữ phiên kết nối sau khi F5 trang
+      if (saved === "true" && accounts && accounts.length > 0) {
         const signer = await provider.getSigner();
         const account = await signer.getAddress();
         const network = await provider.getNetwork();
@@ -124,29 +144,25 @@ export const useWeb3Store = create<Web3State>((set, get) => ({
         });
       }
 
-      // chỉ add listener 1 lần toàn app
+      // Đăng ký lắng nghe sự kiện thay đổi trạng thái ví (chỉ gắn 1 lần)
       if (!listenersAdded) {
         listenersAdded = true;
 
-        window.ethereum.on(
-          "accountsChanged",
-          async (accounts: string[]) => {
-            if (accounts.length === 0) {
-              get().logout();
-            } else {
-              await get().connectWallet();
-            }
+        activeProvider.on("accountsChanged", async (accounts: string[]) => {
+          if (accounts.length === 0) {
+            get().logout();
+          } else {
+            await get().connectWallet();
           }
-        );
+        });
 
-        window.ethereum.on("chainChanged", async () => {
-          await get().connectWallet();
+        activeProvider.on("chainChanged", async () => {
+          // Khi đổi mạng lưới, reset lại cấu trúc ví mới hoàn toàn
+          window.location.reload();
         });
       }
     } catch (error) {
-      console.log(error);
+      console.error("Lỗi khởi tạo trạng thái ví:", error);
     }
   },
-
-  
 }));
