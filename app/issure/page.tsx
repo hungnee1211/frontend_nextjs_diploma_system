@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useMemo } from 'react'; // Đã thêm useMemo ở đây
+import { useState, useEffect, useMemo } from 'react';
 import { useWeb3Store } from '@/store/useWeb3Store';
 import { toast } from 'sonner';
 import {
@@ -57,10 +57,56 @@ export default function IssuerPage() {
     issueDate: new Date().toISOString().split('T')[0],
   });
 
-  // 🔥 TỐI ƯU HÓA: Chỉ tính toán lại mã hash khi dữ liệu diplomaInfo thực sự thay đổi
   const currentDiplomaHash = useMemo(() => {
     return generateDiplomaHash(diplomaInfo);
   }, [diplomaInfo]);
+
+  // 🛠️ HÀM ĐÃ FIX: Tìm kiếm sâu và trích xuất chính xác câu revert từ Contract đưa lên Toast
+  const parseContractError = (error: any): string => {
+    if (!error) return 'Lỗi không xác định khi gọi giao dịch!';
+
+    // 1. Kiểm tra nếu người dùng chủ động bấm "Reject" trên MetaMask / Ví
+    if (error.code === 'ACTION_REJECTED' || error.code === 4001 || error.message?.includes('user rejected')) {
+      return 'Giao dịch đã bị từ chối ký từ ví!';
+    }
+
+    // 2. Kiểm tra thuộc tính reason chuẩn (Ethers v5/v6)
+    if (error.reason) return error.reason;
+    if (error.revert?.args?.[0]) return error.revert.args[0];
+
+    // 3. Quét sâu vào các lớp nested object phổ biến của MetaMask / RPC node
+    const internalError = error.error || error.data?.error || error.data;
+    if (internalError) {
+      if (internalError.message) {
+        // Lọc bớt chữ "execution reverted: " nếu có để chuỗi hiển thị sạch đẹp hơn
+        return internalError.message.replace('execution reverted: ', '');
+      }
+      if (typeof internalError === 'string') return internalError;
+    }
+
+    // 4. Fallback: Ép kiểu sang chuỗi để dùng Regex bóc tách nội dung
+    try {
+      const errorString = typeof error === 'string' ? error : JSON.stringify(error);
+      
+      // Tìm chuỗi tiếng Việt cụ thể mà bạn đã viết trong require() của Solidity
+      if (errorString.includes("Chi truong hoc dang hoat dong moi co quyen")) {
+        return "Chỉ trường học đang hoạt động mới có quyền thực hiện!";
+      }
+
+      // Regex tìm kiếm các đoạn lý do hoàn trả phổ biến
+      const reasonMatch = errorString.match(/"message"\s*:\s*"execution reverted\s*:\s*([^"]+)"/) ||
+                          errorString.match(/reverted with reason string ['"]([^'"]+)['"]/);
+      
+      if (reasonMatch && reasonMatch[1]) {
+        return reasonMatch[1];
+      }
+    } catch (e) {
+      console.error("Không thể phân tích chuỗi lỗi:", e);
+    }
+
+    // 5. Nếu không quét được gì cụ thể, trả về message gốc ngắn gọn thay vì log terminal
+    return error.message ? error.message.slice(0, 150) : 'Giao dịch thất bại trên mạng lưới!';
+  };
 
   const handleConnect = async () => {
     try {
@@ -111,7 +157,7 @@ export default function IssuerPage() {
     ].slice(0, 5));
   };
 
-  // LOGIC GHI DANH SINH VIÊN (CHẶN TRÙNG LẶP)
+  // LOGIC GHI DANH SINH VIÊN
   const handleRegisterStudent = async (e: React.FormEvent) => {
     e.preventDefault();
 
@@ -139,7 +185,7 @@ export default function IssuerPage() {
         }
       }
 
-      // 3. Tiến hành gửi giao dịch nếu tất cả điều kiện hợp lệ
+      // 3. Tiến hành gửi giao dịch
       const tx = await contract.registerStudent(
         studentWalletReg.trim(),
         studentCodeReg.trim()
@@ -154,13 +200,8 @@ export default function IssuerPage() {
 
       toast.success('Ghi danh thành công!');
     } catch (error: any) {
-      console.error(error);
-      const reason = error.reason || error.message || '';
-      if (reason.includes('already registered') || reason.includes('exists')) {
-        toast.error('Lỗi: Sinh viên hoặc mã số này đã tồn tại trên hệ thống!');
-      } else {
-        toast.error('Lỗi khi ghi danh hoặc giao dịch bị từ chối!');
-      }
+      const contractReason = parseContractError(error);
+      toast.error(`Thất bại: ${contractReason}`);
     } finally {
       setLoading(false);
     }
@@ -176,9 +217,7 @@ export default function IssuerPage() {
     setLoading(true);
 
     try {
-      // Sử dụng giá trị đã memoized ở đây để tối ưu hiệu năng và tính nhất quán
       const diplomaHash = currentDiplomaHash;
-
       const studentOnChain = await contract.students(receiverWallet);
 
       if (!studentOnChain || !studentOnChain.exists) {
@@ -187,7 +226,6 @@ export default function IssuerPage() {
         return;
       }
 
-      // Kiểm tra xem bằng cấp này đã được đúc (mint) trước đó chưa
       if (typeof contract.diplomas === 'function') {
         const diplomaOnChain = await contract.diplomas(diplomaHash);
         if (diplomaOnChain && diplomaOnChain.isIssued) {
@@ -214,7 +252,8 @@ export default function IssuerPage() {
         }
       });
     } catch (error: any) {
-      toast.error(error.reason || 'Lỗi khi phát hành bằng!');
+      const contractReason = parseContractError(error);
+      toast.error(`Thất bại: ${contractReason}`);
     } finally {
       setLoading(false);
     }
@@ -306,7 +345,7 @@ export default function IssuerPage() {
                           Wallet Address
                         </label>
                         <input
-                          value={studentWalletReg}
+                          value={studentWalletReg || ""}
                           onChange={(e) => setStudentWalletReg(e.target.value)}
                           placeholder="0x..."
                           className="w-full mt-2 p-5 bg-slate-50 rounded-[1.5rem] outline-none focus:ring-2 focus:ring-emerald-500/20 font-mono text-sm"
@@ -318,7 +357,7 @@ export default function IssuerPage() {
                           Mã số Sinh viên
                         </label>
                         <input
-                          value={studentCodeReg ?? ''}
+                          value={studentCodeReg || ""}
                           onChange={(e) => setStudentCodeReg(e.target.value)}
                           placeholder="B20DCCN..."
                           className="w-full mt-2 p-5 bg-slate-50 rounded-[1.5rem] outline-none focus:ring-2 focus:ring-emerald-500/20 text-sm font-bold"
@@ -351,7 +390,7 @@ export default function IssuerPage() {
                           Ví nhận bằng
                         </label>
                         <input
-                          value={receiverWallet}
+                          value={receiverWallet || ""}
                           onChange={(e) => setReceiverWallet(e.target.value)}
                           placeholder="0x..."
                           className="w-full mt-2 bg-transparent outline-none font-mono text-sm"
@@ -361,6 +400,7 @@ export default function IssuerPage() {
                       <div className="grid grid-cols-2 gap-4">
                         <input
                           name="fullName"
+                          value={diplomaInfo.fullName || ""}
                           onChange={handleInputChange}
                           placeholder="Họ tên"
                           className="p-4 bg-slate-50 rounded-2xl outline-none"
@@ -368,42 +408,43 @@ export default function IssuerPage() {
                         <input
                           type="date"
                           name="dateOfBirth"
+                          value={diplomaInfo.dateOfBirth || ""}
                           onChange={handleInputChange}
                           className="p-4 bg-slate-50 rounded-2xl outline-none"
                         />
                       </div>
 
                       <div className="grid grid-cols-3 gap-4">
-                        <select name="gender" onChange={handleInputChange} className="p-4 bg-slate-50 rounded-2xl outline-none">
-                          <option>Nam</option>
-                          <option>Nữ</option>
+                        <select name="gender" value={diplomaInfo.gender || "Nam"} onChange={handleInputChange} className="p-4 bg-slate-50 rounded-2xl outline-none">
+                          <option value="Nam">Nam</option>
+                          <option value="Nữ">Nữ</option>
                         </select>
                         <input
                           name="course"
+                          value={diplomaInfo.course || ""}
                           onChange={handleInputChange}
                           placeholder="2020-2024"
                           className="p-4 bg-slate-50 rounded-2xl outline-none"
                         />
-                        <select name="ranking" onChange={handleInputChange} className="p-4 bg-slate-50 rounded-2xl outline-none">
-                          <option>Xuất sắc</option>
-                          <option>Giỏi</option>
-                          <option>Khá</option>
+                        <select name="ranking" value={diplomaInfo.ranking || "Khá"} onChange={handleInputChange} className="p-4 bg-slate-50 rounded-2xl outline-none">
+                          <option value="Xuất sắc">Xuất sắc</option>
+                          <option value="Giỏi">Giỏi</option>
+                          <option value="Khá">Khá</option>
                         </select>
                       </div>
-
 
                       <div className="bg-slate-900 p-4 rounded-2xl">
                         <div className="flex justify-between mb-2">
                           <span className="text-[10px] text-emerald-400 font-bold uppercase">Digital Fingerprint</span>
                           <button
                             type="button"
-                            onClick={() => copyToClipboard(currentDiplomaHash)} // Đã đổi sang currentDiplomaHash
+                            onClick={() => copyToClipboard(currentDiplomaHash)}
                           >
                             <Copy size={14} className="text-emerald-400" />
                           </button>
                         </div>
                         <p className="text-[11px] text-emerald-100/70 break-all font-mono">
-                          {currentDiplomaHash} {/* Đã đổi sang currentDiplomaHash */}
+                          {currentDiplomaHash}
                         </p>
                       </div>
 

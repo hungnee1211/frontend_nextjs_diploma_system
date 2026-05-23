@@ -27,12 +27,15 @@ export default function RootLayout({
   return (
     <html lang="en"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}>
-      <Web3Provider>
+     
         
-        <body className="min-h-full flex flex-col">
-          <Toaster/>
-          {children}</body>
-      </Web3Provider>
+        <body className="min-h-full flex flex-col" suppressHydrationWarning>
+           <Web3Provider>
+            <Toaster/>
+          {children}
+           </Web3Provider> 
+          </body>
+     
     </html>
   );
 }
